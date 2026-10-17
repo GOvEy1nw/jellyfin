@@ -11,6 +11,7 @@ using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Extensions;
 using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.Movies;
 using Microsoft.EntityFrameworkCore;
 
 namespace Jellyfin.Server.Implementations.Item;
@@ -58,7 +59,7 @@ public static class OrderMapper
             (ItemSortBy.IsFolder, _) => e => e.IsFolder,
             (ItemSortBy.IsPlayed, _) => e => e.UserData!.Where(f => f.UserId.Equals(query.User!.Id)).OrderBy(f => f.CustomDataKey).FirstOrDefault()!.Played,
             (ItemSortBy.IsUnplayed, _) => e => !e.UserData!.Where(f => f.UserId.Equals(query.User!.Id)).OrderBy(f => f.CustomDataKey).FirstOrDefault()!.Played,
-            (ItemSortBy.DateLastContentAdded, _) => e => e.DateLastMediaAdded,
+            (ItemSortBy.DateLastContentAdded, _) => e => e.Type == typeof(Movie).FullName ? e.DateCreated : e.DateLastMediaAdded,
             (ItemSortBy.Artist, _) => e => e.ItemValues!.Where(f => f.ItemValue.Type == ItemValueType.Artist).OrderBy(f => f.ItemValue.CleanValue).Select(f => f.ItemValue.CleanValue).FirstOrDefault(),
             (ItemSortBy.AlbumArtist, _) => e => e.ItemValues!.Where(f => f.ItemValue.Type == ItemValueType.AlbumArtist).OrderBy(f => f.ItemValue.CleanValue).Select(f => f.ItemValue.CleanValue).FirstOrDefault(),
             (ItemSortBy.Studio, _) => e => e.ItemValues!.Where(f => f.ItemValue.Type == ItemValueType.Studios).OrderBy(f => f.ItemValue.CleanValue).Select(f => f.ItemValue.CleanValue).FirstOrDefault(),

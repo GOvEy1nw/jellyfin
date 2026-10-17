@@ -35,6 +35,7 @@ public sealed class ItemsControllerTests : IClassFixture<JellyfinApplicationFact
     [Theory]
     [InlineData("Users/{0}/Items")]
     [InlineData("Users/{0}/Items/Resume")]
+    [InlineData("Shows/NextUp?userId={0}")]
     public async Task GetUserItems_NonexistentUserId_NotFound(string format)
     {
         var client = _factory.CreateClient();
@@ -48,6 +49,9 @@ public sealed class ItemsControllerTests : IClassFixture<JellyfinApplicationFact
     [InlineData("Items?userId={0}")]
     [InlineData("Users/{0}/Items")]
     [InlineData("Users/{0}/Items/Resume")]
+    [InlineData("Shows/NextUp?userId={0}")]
+    [InlineData("Shows/NextUp?userId={0}&enableMovies=false")]
+    [InlineData("Shows/NextUp?userId={0}&enableResumable=false")]
     public async Task GetItems_UserId_Ok(string format)
     {
         var client = _factory.CreateClient();

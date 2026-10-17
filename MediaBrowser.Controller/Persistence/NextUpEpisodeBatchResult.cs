@@ -15,6 +15,16 @@ public sealed class NextUpEpisodeBatchResult
     public DateTime? LastPlayedDate { get; set; }
 
     /// <summary>
+    /// Gets or sets the earliest creation date for a regular episode after the last watched episode.
+    /// </summary>
+    public DateTime? FirstNewEpisodeAddedDate { get; set; }
+
+    /// <summary>
+    /// Gets or sets the recorded playback date for the completed version of <see cref="LastWatched"/>.
+    /// </summary>
+    public DateTime? LastWatchedCompletedDate { get; set; }
+
+    /// <summary>
     /// Gets or sets the last watched episode (highest season/episode that is played).
     /// </summary>
     public BaseItem? LastWatched { get; set; }
@@ -23,6 +33,11 @@ public sealed class NextUpEpisodeBatchResult
     /// Gets or sets the next unwatched episode after the last watched position.
     /// </summary>
     public BaseItem? NextUp { get; set; }
+
+    /// <summary>
+    /// Gets or sets the furthest in-progress regular episode after <see cref="LastWatched"/>.
+    /// </summary>
+    public BaseItem? ResumableNext { get; set; }
 
     /// <summary>
     /// Gets or sets specials that may air between episodes.

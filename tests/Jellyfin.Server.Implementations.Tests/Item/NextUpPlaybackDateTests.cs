@@ -20,6 +20,7 @@ public sealed class NextUpPlaybackDateTests : SqliteDbTestFixture
     private readonly Guid _inaccessibleId = Guid.NewGuid();
     private readonly Guid _seriesALastWatchedId = Guid.NewGuid();
     private readonly Guid _seriesANextUpId = Guid.NewGuid();
+    private readonly Guid _seriesAResumableId = Guid.NewGuid();
     private readonly Guid _seriesBLastWatchedId = Guid.NewGuid();
     private readonly Guid _seriesBNextUpId = Guid.NewGuid();
     private readonly NextUpService _service;
@@ -32,11 +33,11 @@ public sealed class NextUpPlaybackDateTests : SqliteDbTestFixture
         }
 
         var helpers = new Mock<IItemQueryHelpers>();
-        helpers.Setup(h => h.ApplyAccessFiltering(
-                It.IsAny<JellyfinDbContext>(),
+        helpers.Setup(h => h.TranslateQuery(
                 It.IsAny<IQueryable<BaseItemEntity>>(),
+                It.IsAny<JellyfinDbContext>(),
                 It.IsAny<InternalItemsQuery>()))
-            .Returns((JellyfinDbContext _, IQueryable<BaseItemEntity> query, InternalItemsQuery _) =>
+            .Returns((IQueryable<BaseItemEntity> query, JellyfinDbContext _, InternalItemsQuery _) =>
                 query.Where(entity => !entity.Id.Equals(_inaccessibleId)));
         helpers.Setup(h => h.ApplyNavigations(It.IsAny<IQueryable<BaseItemEntity>>(), It.IsAny<InternalItemsQuery>()))
             .Returns((IQueryable<BaseItemEntity> query, InternalItemsQuery _) => query);
@@ -64,20 +65,42 @@ public sealed class NextUpPlaybackDateTests : SqliteDbTestFixture
         Assert.Equal(new DateTime(2025, 1, 12), results["series-b"].LastPlayedDate);
         Assert.Equal(_seriesALastWatchedId, results["series-a"].LastWatched!.Id);
         Assert.Equal(_seriesANextUpId, results["series-a"].NextUp!.Id);
+        Assert.Equal(new DateTime(2025, 1, 4), results["series-a"].FirstNewEpisodeAddedDate);
         Assert.Equal(_seriesBLastWatchedId, results["series-b"].LastWatched!.Id);
         Assert.Equal(_seriesBNextUpId, results["series-b"].NextUp!.Id);
+    }
+
+    [Fact]
+    public void Batch_PrefersFurthestResumableEpisodeAfterTheHighestCompletedEpisode()
+    {
+        using (var context = CreateDbContext())
+        {
+            AddEpisode(context, _seriesAResumableId, "series-a", 1, 4, dateCreated: new DateTime(2025, 1, 6));
+            AddUserData(context, _seriesAResumableId, _user, new DateTime(2025, 1, 5), played: false, playbackPositionTicks: 1);
+            context.SaveChanges();
+        }
+
+        var result = _service.GetNextUpEpisodesBatch(
+            new InternalItemsQuery(_user),
+            ["series-a"],
+            includeSpecials: false,
+            includeWatchedForRewatching: false)["series-a"];
+
+        Assert.Equal(_seriesANextUpId, result.NextUp!.Id);
+        Assert.Equal(_seriesAResumableId, result.ResumableNext!.Id);
+        Assert.Equal(new DateTime(2025, 1, 4), result.FirstNewEpisodeAddedDate);
     }
 
     private void Seed(JellyfinDbContext context)
     {
         context.Users.AddRange(_user, _otherUser);
 
-        AddEpisode(context, _seriesALastWatchedId, "series-a", 1, 1);
-        AddEpisode(context, _seriesANextUpId, "series-a", 1, 2);
+        AddEpisode(context, _seriesALastWatchedId, "series-a", 1, 1, dateCreated: new DateTime(2025, 1, 1));
+        AddEpisode(context, _seriesANextUpId, "series-a", 1, 2, dateCreated: new DateTime(2025, 1, 4));
         var alternateId = Guid.NewGuid();
-        AddEpisode(context, alternateId, "series-a", 1, 1, _seriesALastWatchedId);
+        AddEpisode(context, alternateId, "series-a", 1, 1, _seriesALastWatchedId, new DateTime(2025, 1, 1));
         AddEpisode(context, Guid.NewGuid(), "series-a", 0, 1);
-        AddEpisode(context, _inaccessibleId, "series-a", 1, 3);
+        AddEpisode(context, _inaccessibleId, "series-a", 1, 3, dateCreated: new DateTime(2025, 1, 2));
 
         AddEpisode(context, _seriesBLastWatchedId, "series-b", 1, 1);
         AddEpisode(context, _seriesBNextUpId, "series-b", 1, 2);
@@ -96,7 +119,14 @@ public sealed class NextUpPlaybackDateTests : SqliteDbTestFixture
         context.SaveChanges();
     }
 
-    private static void AddEpisode(JellyfinDbContext context, Guid id, string seriesKey, int season, int episode, Guid? primaryVersionId = null)
+    private static void AddEpisode(
+        JellyfinDbContext context,
+        Guid id,
+        string seriesKey,
+        int season,
+        int episode,
+        Guid? primaryVersionId = null,
+        DateTime? dateCreated = null)
     {
         context.BaseItems.Add(new BaseItemEntity
         {
@@ -107,11 +137,12 @@ public sealed class NextUpPlaybackDateTests : SqliteDbTestFixture
             SeriesPresentationUniqueKey = seriesKey,
             ParentIndexNumber = season,
             IndexNumber = episode,
-            PrimaryVersionId = primaryVersionId
+            PrimaryVersionId = primaryVersionId,
+            DateCreated = dateCreated
         });
     }
 
-    private static void AddUserData(JellyfinDbContext context, Guid itemId, User user, DateTime lastPlayedDate, bool played)
+    private static void AddUserData(JellyfinDbContext context, Guid itemId, User user, DateTime lastPlayedDate, bool played, long playbackPositionTicks = 0)
     {
         context.UserData.Add(new UserData
         {
@@ -120,6 +151,7 @@ public sealed class NextUpPlaybackDateTests : SqliteDbTestFixture
             CustomDataKey = itemId.ToString("N"),
             LastPlayedDate = lastPlayedDate,
             Played = played,
+            PlaybackPositionTicks = playbackPositionTicks,
             Item = null!,
             User = null!
         });

@@ -37,20 +37,6 @@ namespace Emby.Server.Implementations.TV
         {
             var user = query.User;
 
-            string? presentationUniqueKey = null;
-            if (!query.SeriesId.IsNullOrEmpty())
-            {
-                if (_libraryManager.GetItemById(query.SeriesId.Value) is Series series)
-                {
-                    presentationUniqueKey = GetUniqueSeriesKey(series);
-                }
-            }
-
-            if (!string.IsNullOrEmpty(presentationUniqueKey))
-            {
-                return GetNextUpBatched(query, user, [presentationUniqueKey], options);
-            }
-
             BaseItem[] parents;
 
             if (query.ParentId.HasValue)
@@ -82,34 +68,36 @@ namespace Emby.Server.Implementations.TV
             var user = request.User;
 
             string? presentationUniqueKey = null;
-            int? limit = null;
             if (!request.SeriesId.IsNullOrEmpty())
             {
                 if (_libraryManager.GetItemById(request.SeriesId.Value) is Series series)
                 {
                     presentationUniqueKey = GetUniqueSeriesKey(series);
-                    limit = 1;
                 }
             }
 
+            var itemQuery = new InternalItemsQuery(user) { DtoOptions = options };
+            var nextUpSeriesKeys = _libraryManager.GetNextUpSeriesKeys(itemQuery, parentsFolders, request.NextUpDateCutoff);
             if (!string.IsNullOrEmpty(presentationUniqueKey))
             {
-                return GetNextUpBatched(request, user, [presentationUniqueKey], options);
+                nextUpSeriesKeys = nextUpSeriesKeys.Where(key => key == presentationUniqueKey).ToArray();
             }
 
-            if (limit.HasValue)
-            {
-                limit = limit.Value + 10;
-            }
+            var movies = request.EnableMovies && request.EnableResumable && request.SeriesId.IsNullOrEmpty()
+                ? GetResumableMovies(user, parentsFolders, options)
+                : [];
 
-            var nextUpSeriesKeys = _libraryManager.GetNextUpSeriesKeys(new InternalItemsQuery(user) { Limit = limit }, parentsFolders, request.NextUpDateCutoff);
-
-            return GetNextUpBatched(request, user, nextUpSeriesKeys, options);
+            return GetNextUpBatched(request, user, nextUpSeriesKeys, itemQuery, movies);
         }
 
-        private QueryResult<BaseItem> GetNextUpBatched(NextUpQuery request, User user, IReadOnlyList<string> seriesKeys, DtoOptions dtoOptions)
+        private QueryResult<BaseItem> GetNextUpBatched(
+            NextUpQuery request,
+            User user,
+            IReadOnlyList<string> seriesKeys,
+            InternalItemsQuery query,
+            IReadOnlyList<BaseItem> movies)
         {
-            if (seriesKeys.Count == 0)
+            if (seriesKeys.Count == 0 && movies.Count == 0)
             {
                 return new QueryResult<BaseItem>();
             }
@@ -117,14 +105,11 @@ namespace Emby.Server.Implementations.TV
             var includeSpecials = _configurationManager.Configuration.DisplaySpecialsWithinSeasons;
             var includeRewatching = request.EnableRewatching;
 
-            var query = new InternalItemsQuery(user)
-            {
-                DtoOptions = dtoOptions
-            };
+            var batchResult = seriesKeys.Count == 0
+                ? new Dictionary<string, MediaBrowser.Controller.Persistence.NextUpEpisodeBatchResult>()
+                : _libraryManager.GetNextUpEpisodesBatch(query, seriesKeys, includeSpecials, includeRewatching);
 
-            var batchResult = _libraryManager.GetNextUpEpisodesBatch(query, seriesKeys, includeSpecials, includeRewatching);
-
-            var nextUpList = new List<(DateTime LastWatchedDate, Episode Episode)>();
+            var nextUpList = new List<(DateTime EffectiveDate, BaseItem Item)>();
 
             foreach (var seriesKey in seriesKeys)
             {
@@ -137,45 +122,85 @@ namespace Emby.Server.Implementations.TV
 
                 if (nextEpisode is not null)
                 {
-                    // The last played date and the version that was actually played live on the version item's user data
-                    // The played state propagated to the sibling versions carries no date
-                    var (playedVersion, lastPlayedDate) = GetMostRecentlyPlayedVersion(result.LastWatched, user);
-                    nextEpisode = GetPreferredVersion(nextEpisode, result.LastWatched, playedVersion);
+                    // The version that was actually played lives on the version item's user data.
+                    // Scoped aggregate playback dates determine Next Up ordering.
+                    var (playedVersion, _) = GetMostRecentlyPlayedVersion(result.LastWatched, user);
+                    if (!ReferenceEquals(nextEpisode, result.ResumableNext))
+                    {
+                        nextEpisode = GetPreferredVersion(nextEpisode, result.LastWatched, playedVersion);
+                    }
 
                     var lastWatchedDate = result.LastPlayedDate
                         ?? (result.LastWatched is null
                             ? DateTime.MinValue
-                            : lastPlayedDate ?? DateTime.MinValue.AddDays(1));
+                            : DateTime.MinValue.AddDays(1));
+                    var boostDate = GetBoostDate(result);
 
-                    nextUpList.Add((lastWatchedDate, nextEpisode));
+                    nextUpList.Add((Max(lastWatchedDate, boostDate), nextEpisode));
                 }
 
-                if (includeRewatching)
+                if (nextEpisode is null && includeRewatching)
                 {
                     var nextPlayedEpisode = DetermineNextEpisodeForRewatching(result, user, includeSpecials);
 
                     if (nextPlayedEpisode is not null)
                     {
-                        var (playedVersion, lastPlayedDate) = GetMostRecentlyPlayedVersion(result.LastWatchedForRewatching, user);
+                        var (playedVersion, _) = GetMostRecentlyPlayedVersion(result.LastWatchedForRewatching, user);
                         nextPlayedEpisode = GetPreferredVersion(nextPlayedEpisode, result.LastWatchedForRewatching, playedVersion);
 
-                        DateTime rewatchLastWatchedDate = DateTime.MinValue;
-                        if (result.LastWatchedForRewatching is not null)
-                        {
-                            rewatchLastWatchedDate = lastPlayedDate ?? DateTime.MinValue.AddDays(1);
-                        }
+                        var rewatchLastWatchedDate = result.LastPlayedDate
+                            ?? (result.LastWatchedForRewatching is null
+                                ? DateTime.MinValue
+                                : DateTime.MinValue.AddDays(1));
 
                         nextUpList.Add((rewatchLastWatchedDate, nextPlayedEpisode));
                     }
                 }
             }
 
-            var sortedEpisodes = nextUpList
-                .OrderByDescending(x => x.LastWatchedDate)
-                .Select(x => (BaseItem)x.Episode);
+            var movieData = _userDataManager.GetUserDataBatch(movies, user);
+            foreach (var movie in movies)
+            {
+                nextUpList.Add((movieData.GetValueOrDefault(movie.Id)?.LastPlayedDate ?? DateTime.MinValue, movie));
+            }
 
-            return GetResult(sortedEpisodes, request);
+            var sortedItems = nextUpList
+                .Where(x => x.EffectiveDate >= request.NextUpDateCutoff)
+                .OrderByDescending(x => x.EffectiveDate)
+                .ThenByDescending(x => x.Item.Id)
+                .Select(x => x.Item);
+
+            return GetResult(sortedItems, request);
         }
+
+        private IReadOnlyList<BaseItem> GetResumableMovies(User user, BaseItem[] parentsFolders, DtoOptions dtoOptions)
+        {
+            return _libraryManager.GetItemList(
+                new InternalItemsQuery(user)
+                {
+                    DtoOptions = dtoOptions,
+                    IncludeItemTypes = [BaseItemKind.Movie],
+                    IncludeOwnedItems = true,
+                    IsResumable = true,
+                    IsVirtualItem = false,
+                    Recursive = true
+                },
+                parentsFolders.ToList());
+        }
+
+        private static DateTime? GetBoostDate(MediaBrowser.Controller.Persistence.NextUpEpisodeBatchResult result)
+        {
+            var addedDate = result.FirstNewEpisodeAddedDate;
+            if (!addedDate.HasValue || addedDate.Value == DateTime.MinValue || addedDate.Value > DateTime.UtcNow || result.LastWatched is null)
+            {
+                return null;
+            }
+
+            return result.LastWatchedCompletedDate.HasValue && addedDate > result.LastWatchedCompletedDate ? addedDate : null;
+        }
+
+        private static DateTime Max(DateTime first, DateTime? second)
+            => second.HasValue && second > first ? second.Value : first;
 
         private Episode? DetermineNextEpisode(
             MediaBrowser.Controller.Persistence.NextUpEpisodeBatchResult result,
@@ -186,6 +211,11 @@ namespace Emby.Server.Implementations.TV
         {
             var nextEpisode = (includePlayed ? result.NextPlayedForRewatching : result.NextUp) as Episode;
             var lastWatchedEpisode = (includePlayed ? result.LastWatchedForRewatching : result.LastWatched) as Episode;
+
+            if (!includePlayed && includeResumable && result.ResumableNext is Episode resumableEpisode)
+            {
+                return resumableEpisode;
+            }
 
             if (includeSpecials && result.Specials?.Count > 0)
             {

@@ -55,9 +55,13 @@ public class TvShowsController : BaseJellyfinApiController
     }
 
     /// <summary>
-    /// Gets a list of next up episodes.
+    /// Gets the next episode of started series and resumable movies.
     /// </summary>
-    /// <param name="userId">The user id of the user to get the next up episodes for.</param>
+    /// <remarks>
+    /// Returns at most one episode per series. Items are ordered by the later of their latest playback
+    /// and the first eligible episode addition after the user caught up. Requests with a series id return only episodes.
+    /// </remarks>
+    /// <param name="userId">The user id of the user to get the next up items for.</param>
     /// <param name="startIndex">Optional. The record index to start at. All items with a lower index will be dropped from the results.</param>
     /// <param name="limit">Optional. The maximum number of records to return.</param>
     /// <param name="fields">Optional. Specify additional fields of information to return in the output.</param>
@@ -67,11 +71,12 @@ public class TvShowsController : BaseJellyfinApiController
     /// <param name="imageTypeLimit">Optional. The max number of images to return, per image type.</param>
     /// <param name="enableImageTypes">Optional. The image types to include in the output.</param>
     /// <param name="enableUserData">Optional. Include user data.</param>
-    /// <param name="nextUpDateCutoff">Optional. Starting date of shows to show in Next Up section.</param>
+    /// <param name="nextUpDateCutoff">Optional. Minimum effective activity date of items to show in Next Up.</param>
     /// <param name="enableTotalRecordCount">Whether to enable the total records count. Defaults to true.</param>
-    /// <param name="enableResumable">Whether to include resumable episodes in next up results.</param>
+    /// <param name="enableResumable">Whether to include resumable episodes and movies in next up results.</param>
     /// <param name="enableRewatching">Whether to include watched episodes in next up results.</param>
-    /// <returns>A <see cref="QueryResult{BaseItemDto}"/> with the next up episodes.</returns>
+    /// <param name="enableMovies">Whether to include resumable movies. Defaults to true; requires enableResumable and no seriesId.</param>
+    /// <returns>A <see cref="QueryResult{BaseItemDto}"/> with the next up items.</returns>
     [HttpGet("NextUp")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult<QueryResult<BaseItemDto>> GetNextUp(
@@ -88,7 +93,8 @@ public class TvShowsController : BaseJellyfinApiController
         [FromQuery] DateTime? nextUpDateCutoff,
         [FromQuery] bool enableTotalRecordCount = true,
         [FromQuery] bool enableResumable = true,
-        [FromQuery] bool enableRewatching = false)
+        [FromQuery] bool enableRewatching = false,
+        [FromQuery] bool enableMovies = true)
     {
         var user = _userManager.GetUserById(RequestHelpers.GetUserId(User, userId));
         if (user is null)
@@ -110,7 +116,8 @@ public class TvShowsController : BaseJellyfinApiController
                 EnableTotalRecordCount = enableTotalRecordCount,
                 NextUpDateCutoff = nextUpDateCutoff ?? DateTime.MinValue,
                 EnableResumable = enableResumable,
-                EnableRewatching = enableRewatching
+                EnableRewatching = enableRewatching,
+                EnableMovies = enableMovies
             },
             options);
 

@@ -15,6 +15,7 @@ public class NextUpQuery
         NextUpDateCutoff = DateTime.MinValue;
         EnableResumable = false;
         EnableRewatching = false;
+        EnableMovies = true;
     }
 
     /// <summary>
@@ -56,12 +57,12 @@ public class NextUpQuery
     public bool EnableTotalRecordCount { get; set; }
 
     /// <summary>
-    /// Gets or sets a value indicating the oldest date for a show to appear in Next Up.
+    /// Gets or sets the minimum effective activity date for an item to appear in Next Up.
     /// </summary>
     public DateTime NextUpDateCutoff { get; set; }
 
     /// <summary>
-    /// Gets or sets a value indicating whether to include resumable episodes as next up.
+    /// Gets or sets a value indicating whether to include resumable episodes and movies as next up.
     /// </summary>
     public bool EnableResumable { get; set; }
 
@@ -69,4 +70,9 @@ public class NextUpQuery
     /// Gets or sets a value indicating whether getting rewatching next up list.
     /// </summary>
     public bool EnableRewatching { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to include resumable movies in next up results.
+    /// </summary>
+    public bool EnableMovies { get; set; }
 }

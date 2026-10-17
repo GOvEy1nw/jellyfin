@@ -11,6 +11,7 @@ using Jellyfin.Database.Implementations.Enums;
 using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Audio;
+using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Controller.Resolvers;
@@ -61,6 +62,24 @@ public class LibraryManagerSortTests
             new[] { (ItemSortBy.DateLastContentAdded, SortOrder.Descending) }).ToArray();
 
         Assert.Equal(new[] { "Alpha", "Mike", "Zulu" }, sorted.Select(i => i.Name));
+    }
+
+    [Theory]
+    [InlineData(SortOrder.Ascending)]
+    [InlineData(SortOrder.Descending)]
+    public void Sort_DateLastContentAdded_InterleavesMoviesAndFolders(SortOrder direction)
+    {
+        var libraryManager = CreateLibraryManager(new IBaseItemComparer[] { new DateLastMediaAddedComparer() });
+        var olderSeries = MakeFolder("Older series", new DateTime(2026, 1, 1));
+        var newerSeries = MakeFolder("Newer series", new DateTime(2026, 1, 3));
+        var movie = new Movie { Id = Guid.NewGuid(), DateCreated = new DateTime(2026, 1, 2) };
+        var audio = new Audio { Id = Guid.NewGuid(), DateCreated = new DateTime(2026, 1, 4) };
+        BaseItem[] items = [olderSeries, newerSeries, movie, audio];
+        BaseItem[] expected = direction == SortOrder.Descending
+            ? [newerSeries, movie, olderSeries, audio]
+            : [audio, olderSeries, movie, newerSeries];
+
+        Assert.Equal(expected, libraryManager.Sort(items, null, [(ItemSortBy.DateLastContentAdded, direction)]));
     }
 
     private static Folder MakeFolder(string name, DateTime dateLastMediaAdded)

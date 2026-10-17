@@ -123,7 +123,7 @@ public sealed partial class BaseItemRepository
 
         if (collectionType is CollectionType.tvshows)
         {
-            return GetLatestTvShowItems(context, baseQuery, filter, limit);
+            return GetLatestTvShowItems(context, baseQuery, filter, limit).Select(result => result.Item).ToArray();
         }
 
         if (collectionType is CollectionType.movies)
@@ -137,10 +137,12 @@ public sealed partial class BaseItemRepository
             var latestMovies = GetLatestMovieItems(context, moviesQuery, filter, limit);
             var latestShows = GetLatestTvShowItems(context, baseQuery, filter, limit);
 
-            return latestMovies.Concat(latestShows)
-                .OrderByDescending(dto => dto.DateCreated)
-                .ThenByDescending(dto => dto.Id)
+            return latestMovies.Select(item => (Item: item, DateAdded: item.DateCreated))
+                .Concat(latestShows)
+                .OrderByDescending(result => result.DateAdded)
+                .ThenByDescending(result => result.Item.Id)
                 .Take(limit ?? int.MaxValue)
+                .Select(result => result.Item)
                 .ToList();
         }
 
@@ -278,8 +280,8 @@ public sealed partial class BaseItemRepository
     /// <param name="baseQuery">The base query with filters already applied.</param>
     /// <param name="filter">The query filter options.</param>
     /// <param name="limit">Maximum number of items to return.</param>
-    /// <returns>A list of BaseItemDto representing the latest TV content.</returns>
-    private IReadOnlyList<BaseItemDto> GetLatestTvShowItems(JellyfinDbContext context, IQueryable<BaseItemEntity> baseQuery, InternalItemsQuery filter, int? limit)
+    /// <returns>The latest TV representatives and the dates of their newest content.</returns>
+    private IReadOnlyList<(BaseItemDto Item, DateTime DateAdded)> GetLatestTvShowItems(JellyfinDbContext context, IQueryable<BaseItemEntity> baseQuery, InternalItemsQuery filter, int? limit)
     {
         // Episodes added within this window are considered "recently added together"
         const double RecentAdditionWindowHours = 24.0;
@@ -287,8 +289,8 @@ public sealed partial class BaseItemRepository
         // Step 1: Find the top N series with recently added content, ordered by most recent addition
         var topSeriesWithDates = baseQuery
             .Where(e => e.SeriesName != null)
-            .GroupBy(e => e.SeriesName)
-            .Select(g => new { SeriesName = g.Key!, MaxDate = g.Max(e => e.DateCreated) })
+            .GroupBy(e => e.SeriesId ?? e.Id)
+            .Select(g => new { SeriesId = g.Key, MaxDate = g.Max(e => e.DateCreated) })
             .OrderByDescending(g => g.MaxDate);
 
         if (limit.HasValue)
@@ -296,12 +298,12 @@ public sealed partial class BaseItemRepository
             topSeriesWithDates = topSeriesWithDates.Take(limit.Value).OrderByDescending(g => g.MaxDate);
         }
 
-        // Materialize series names and cutoff to avoid embedding the GroupBy+OrderBy
+        // Materialize series identities and cutoff to avoid embedding the GroupBy+OrderBy
         // expression tree as a subquery inside the episode query.
         var topSeriesData = topSeriesWithDates
-            .Select(g => new { g.SeriesName, g.MaxDate })
+            .Select(g => new { g.SeriesId, g.MaxDate })
             .ToList();
-        var topSeriesNames = topSeriesData.Select(g => g.SeriesName).ToList();
+        var topSeriesIds = topSeriesData.Select(g => g.SeriesId).ToList();
 
         // Compute a global date cutoff: the oldest series' max date minus the window.
         // Episodes before this cutoff cannot be in any series' "recent additions" window,
@@ -311,7 +313,7 @@ public sealed partial class BaseItemRepository
             : null;
 
         // Restrict to episodes of the top series, optionally bounded by the global cutoff.
-        var episodeQuery = baseQuery.Where(e => e.SeriesName != null && topSeriesNames.Contains(e.SeriesName));
+        var episodeQuery = baseQuery.Where(e => e.SeriesName != null && topSeriesIds.Contains(e.SeriesId ?? e.Id));
         if (globalCutoff is not null)
         {
             episodeQuery = episodeQuery.Where(e => e.DateCreated >= globalCutoff);
@@ -321,7 +323,7 @@ public sealed partial class BaseItemRepository
         var allEpisodes = episodeQuery
             .OrderByDescending(e => e.DateCreated)
             .ThenByDescending(e => e.Id)
-            .Select(e => new { e.Id, e.SeriesName, e.DateCreated, e.SeasonId, e.SeriesId })
+            .Select(e => new { e.Id, e.DateCreated, e.SeasonId, e.SeriesId })
             .AsEnumerable();
 
         // Collect all season/series IDs we'll need to look up for count information
@@ -337,7 +339,7 @@ public sealed partial class BaseItemRepository
             Guid MostRecentEpisodeId)>();
 
         // Step 3: Analyze each series to identify recent additions within the time window
-        foreach (var group in allEpisodes.GroupBy(e => e.SeriesName))
+        foreach (var group in allEpisodes.GroupBy(e => e.SeriesId ?? e.Id))
         {
             var episodes = group.ToList();
             var mostRecentDate = episodes[0].DateCreated ?? DateTime.MinValue;
@@ -534,9 +536,10 @@ public sealed partial class BaseItemRepository
         }
 
         return finalResults
-            .Select(r => DeserializeBaseItem(r.Entity, filter.SkipDeserialization))
-            .Where(dto => dto is not null)
-            .ToArray()!;
+            .Select(r => (Item: DeserializeBaseItem(r.Entity, filter.SkipDeserialization), DateAdded: r.MaxDate))
+            .Where(result => result.Item is not null)
+            .Select(result => (result.Item!, result.DateAdded))
+            .ToArray();
     }
 
     /// <inheritdoc/>
